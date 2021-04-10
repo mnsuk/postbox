@@ -1,3 +1,9 @@
+// #define DEBUG
+#ifdef DEBUG
+#define DB if(1)
+#else
+#define DB if(0)
+#endif
 /*
 Postbox
 =======
@@ -12,11 +18,13 @@ Magnetic reed switch connected to GPIO 25
 Author:
 Martin Saunders <mnsaunders@gmail.com>
 */
+
 #include "EspMQTTClient.h"
 
 #define TOPIC_HOME "homeassistant/binary_sensor/postbox/"
 #define AVAILABILITY_TOPIC TOPIC_HOME "availability"
 #define STATE_TOPIC TOPIC_HOME "state"
+#define REPORT_TOPIC TOPIC_HOME "report"
 
 #define ST_INIT 0
 #define ST_FIRSTOPEN 1
@@ -24,13 +32,11 @@ Martin Saunders <mnsaunders@gmail.com>
 #define ST_STUCK 3
 #define ST_CLOSED 4
 
-#define MAX_OPENFLAP_TIME 30000
-#define MAX_STUCK_BOOT_COUNT 5
-#define STILL_OPEN_TIMER_SLEEP_MICROSECS 120 * 1000000
-#define STUCK_TIMER_SLEEP_MICROSECS 1800 * 1000000
+#define MAX_OPENFLAP_TIME 15000 // 15 seconds
+#define MAX_STILL_OPEN_COUNT 5
+#define STILL_OPEN_TIMER_SLEEP_MICROSECS 120 * 1000000 // 2 minutes
+#define STUCK_TIMER_SLEEP_MICROSECS 1800 * 1000000     // 30 minutes
 
-// const char availability_topic[] = AVAILABILITY_TOPIC;
-// const char STATE_TOPIC[] = TOPIC_HOME  "state"
 EspMQTTClient client(
     "Penguins",
     "9EF382ABCD",
@@ -40,17 +46,18 @@ EspMQTTClient client(
     "ESP32_postbox" // Client name that uniquely identify your device
 );
 
+// PIN for magnetic door sensor
 gpio_num_t flapSensorPin = GPIO_NUM_25;
 gpio_num_t GPIO_INPUT_IO_TRIGGER = flapSensorPin;
 int GPIO_FLAP_CLOSED_STATE = LOW;
 int GPIO_FLAP_OPEN_STATE = !GPIO_FLAP_CLOSED_STATE;
 
 // RTC data retained across sleep cycles
-RTC_DATA_ATTR int currentState = ST_INIT;
-RTC_DATA_ATTR int bootCount = 0;
-RTC_DATA_ATTR int stuckBootCount = 0;
-RTC_DATA_ATTR int lastFlapState = -99;
-RTC_DATA_ATTR long timeAwakeMillis = 0;
+RTC_DATA_ATTR int rtc_currentState = ST_INIT;
+RTC_DATA_ATTR int rtc_bootCount = 0;
+RTC_DATA_ATTR int rtc_stillOpenCount = 0;
+RTC_DATA_ATTR int rtc_lastFlapState = -99;
+RTC_DATA_ATTR long rtc_timeAwakeMillis = 0;
 
 int flapState = LOW;
 long currentMillis;
@@ -58,13 +65,11 @@ int startTime = 0;
 char totalTimeAwake[21];
 
 /*
-Method to print the reason by which ESP32
-has been awaken from sleep
+ Print the reason that the ESP32 has been awoken from sleep
 */
 void print_wakeup_reason()
 {
     esp_sleep_wakeup_cause_t wakeup_reason;
-
     wakeup_reason = esp_sleep_get_wakeup_cause();
 
     switch (wakeup_reason)
@@ -91,7 +96,7 @@ void print_wakeup_reason()
 }
 
 /* formatting function to convert milliseconds to h:m:s */
-void runtime(unsigned long ms)
+void msToTimeStr(char *str, unsigned long ms)
 {
     unsigned long runMillis = ms;
     unsigned long allSeconds = runMillis / 1000;
@@ -99,56 +104,60 @@ void runtime(unsigned long ms)
     int secsRemaining = allSeconds % 3600;
     int runMinutes = secsRemaining / 60;
     int runSeconds = secsRemaining % 60;
-    sprintf(totalTimeAwake, "%02d:%02d:%02d", runHours, runMinutes, runSeconds);
+    sprintf(str, "%02d:%02d:%02d", runHours, runMinutes, runSeconds);
 }
 
 /* Save state variables and go into deep sleep */
 void esp32Sleep()
 {
-    timeAwakeMillis = timeAwakeMillis + (millis() - currentMillis);
-    lastFlapState = digitalRead(flapSensorPin);
-    Serial.printf("\n FlapState %d Last FlapState %d Awake ms: %ld", flapState, lastFlapState, timeAwakeMillis);
-    Serial.printf("\ngoing to sleep.");
+    rtc_timeAwakeMillis = rtc_timeAwakeMillis + (millis() - currentMillis);
+    rtc_lastFlapState = digitalRead(flapSensorPin);
+    msToTimeStr(totalTimeAwake, rtc_timeAwakeMillis);
+    DB Serial.printf("Flap is %d, awake %s, going to sleep.\n", rtc_lastFlapState, totalTimeAwake);
     esp_deep_sleep_start();
     Serial.printf("this will never be printed");
 }
 
-void publish(int st)
+void publishFlapState(int st)
 {
 
-    Serial.print("Waiting for net connect:");
-    while (true)
+    DB Serial.print("Waiting for net:");
+    int loopCount = 0;
+    while (loopCount < 10)
     {
         client.loop();
-        Serial.print(".");
-        delay(500);
+        DB Serial.print(".");
+        delay(50);
         if (client.isConnected())
         {
-            Serial.println(".");
-            if (st == GPIO_FLAP_OPEN_STATE)
+            if (loopCount == 0)
             {
-                client.publish(STATE_TOPIC, "open");
+                DB Serial.print("p");
+                if (st == GPIO_FLAP_OPEN_STATE)
+                {
+                    client.publish(STATE_TOPIC, "open");
+                    // client.publish(AVAILABILITY_TOPIC, "offline", true);
+                }
+                else
+                {
+                    client.publish(STATE_TOPIC, "closed");
+                    // client.publish(AVAILABILITY_TOPIC, "offline", true);
+                }
             }
-            else
-            {
-                client.publish(STATE_TOPIC, "closed");
-            }
-            delay(500);
-            break;
+            loopCount++;
         }
     }
+    DB Serial.println(".");
 }
 
 void onConnectionEstablished()
 {
-    Serial.println("onConnectionEstablished.");
-    // client.subscribe("hello/test", onMessageReceived);
     client.publish(AVAILABILITY_TOPIC, "online", true);
 }
 
 void onMessageReceived(const String &message)
 {
-    Serial.print("message received from hello/test: " + message);
+    DB Serial.print("message received from hello/test: " + message);
     if (message.startsWith("o"))
     {
         client.publish(STATE_TOPIC, "open");
@@ -167,103 +176,112 @@ void onMessageReceived(const String &message)
     }
 }
 
+void print_status() {
+    switch(rtc_currentState) {
+        case ST_INIT:
+        Serial.print("State ST_INIT, ");
+        break;
+        case ST_FIRSTOPEN:
+        Serial.print("State ST_FIRSTOPEN, ");
+        break;
+        case ST_STILLOPEN:
+        Serial.print("State ST_STILLOPEN, ");
+        break;
+        case ST_CLOSED:
+        Serial.print("State ST_CLOSED, ");
+        break;
+        case ST_STUCK:
+        Serial.print("State ST_STUCK, ");
+        break;    
+    }
+    Serial.print(" flapState: " + String(flapState));
+    Serial.print(", bootCount: " + String(rtc_bootCount));
+    Serial.println(", stillOpenCount " + String(rtc_stillOpenCount));
+}
+
 void setup()
 {
     currentMillis = millis();
     Serial.begin(115200);
-    client.enableDebuggingMessages();
+    // client.enableDebuggingMessages();
     pinMode(GPIO_INPUT_IO_TRIGGER, INPUT_PULLUP);
     gpio_pullup_en(GPIO_INPUT_IO_TRIGGER);
     gpio_pulldown_dis(GPIO_INPUT_IO_TRIGGER);
     flapState = digitalRead(flapSensorPin);
+    ++rtc_bootCount;
 
-    ++bootCount;
-    Serial.println("State: " + String(currentState));
-    Serial.println("Boot counter: " + String(bootCount));
-    Serial.println("Boot stuck counter: " + String(stuckBootCount));
-    Serial.println("Last flap state: " + String(lastFlapState));
-    // Serial.println("Current flap state: " + String(flapState));
-    print_wakeup_reason();
+    DB print_wakeup_reason();
+    DB print_status();
 
-    Serial.print("flapState: " + String(flapState));
-    Serial.print("currentState: " + String(currentState));
-    Serial.print("GPIO_OPEN: " + String(GPIO_FLAP_OPEN_STATE));
-    Serial.println("GPIO_CLOSED: " + String(GPIO_FLAP_CLOSED_STATE));
-    switch (currentState)
+    switch (rtc_currentState)
     {
     case ST_INIT:
-        Serial.println("ST_INIT");
         if (flapState == GPIO_FLAP_OPEN_STATE)
         {
-            Serial.println("to firstopen");
+            DB Serial.println("Transitiion ST_INIT to ST_FIRSTOPEN");
             firstopen();
-            Serial.println("ST_FIRSTOPEN");
-            Serial.println("State: " + String(currentState));
+            DB print_status();
             if (flapState == GPIO_FLAP_OPEN_STATE)
             {
-                Serial.println("to stillopen");
+                DB Serial.println("Transitiion ST_FIRSTOPEN to ST_STILLOPEN");
                 stillopen();
             }
             else
             {
-                Serial.println("to closed");
+                DB Serial.println("Transitiion ST_FIRSTOPEN to ST_CLOSED");
                 closed();
             }
         }
         else
         {
-            Serial.println("to closed");
+            DB Serial.println("Transitiion ST_INIT to ST_CLOSED");
             closed();
         }
         break;
     case ST_STILLOPEN:
-        Serial.println("ST_STILLOPEN");
         if (flapState == GPIO_FLAP_CLOSED_STATE)
         {
-            Serial.println("to closed");
+            DB Serial.println("Transitiion ST_STILLOPEN to ST_CLOSED");
             closed();
         }
         else
         {
-            if (bootCount <= MAX_STUCK_BOOT_COUNT)
+            if (rtc_stillOpenCount <= MAX_STILL_OPEN_COUNT)
             {
-                Serial.println("to stillopen");
+                DB Serial.println("Transitiion ST_STILLOPEN to ST_STILLOPEN");
                 stillopen();
             }
             else
             {
-                Serial.println("to stuck");
+                DB Serial.println("Transitiion ST_STILLOPEN to ST_STUCK");
                 stuck();
             }
         }
         break;
     case ST_STUCK:
-        Serial.println("ST_STUCK");
         if (flapState == GPIO_FLAP_CLOSED_STATE)
         {
-            Serial.println("to closed");
+            DB Serial.println("Transitiion ST_STUCK to ST_CLOSED");
             closed();
         }
         else
         {
-            Serial.println("to stuck");
+            DB Serial.println("Transitiion ST_STUCK to ST_STUCK");
             stuck();
         }
         break;
     case ST_CLOSED:
-        Serial.println("ST_CLOSED");
-        Serial.println("to firstopen");
+        DB Serial.println("Transitiion ST_CLOSED to ST_FIRSTOPEN");
         firstopen();
-        Serial.println("ST_FIRSTOPEN");
-        Serial.println("State: " + String(currentState));
+        DB print_status();
         if (flapState == GPIO_FLAP_OPEN_STATE)
         {
-            Serial.println("to stillopen");
+            DB Serial.println("Transitiion ST_FIRSTOPEN to ST_STILLOPEN");
             stillopen();
         }
         else
         {
-            Serial.println("to closed");
+            DB Serial.println("Transitiion ST_FIRSTOPEN to ST_CLOSED");
             closed();
         }
         break;
@@ -280,49 +298,43 @@ void loop()
 
 void firstopen()
 {
-    currentState = ST_FIRSTOPEN;
-    publish(GPIO_FLAP_OPEN_STATE);
+    rtc_currentState = ST_FIRSTOPEN;
+    publishFlapState(GPIO_FLAP_OPEN_STATE);
     long n = 0;
     while (flapState == GPIO_FLAP_OPEN_STATE)
     {
         n++;
         flapState = digitalRead(flapSensorPin);
         long elapsedTime = (millis() - startTime);
-        if (n % 40 == 0)
-            Serial.printf("flapState: %d,   %ld ms \n", flapState, elapsedTime);
-        else
-            Serial.print(flapState);
         delay(50);
 
         if (elapsedTime > MAX_OPENFLAP_TIME)
         {
-            Serial.printf("Flap stuck open for %ld ms > %d ms .. ending loop", elapsedTime, MAX_OPENFLAP_TIME);
+            DB Serial.printf("Flap stuck open for %ld ms > %d ms .. ending loop\n", elapsedTime, MAX_OPENFLAP_TIME);
             break;
         }
     }
-    runtime(millis() - currentMillis + timeAwakeMillis);
-    Serial.println("ESP32 total awaketime :" + (String)totalTimeAwake);
 }
 
 void closed()
 {
-    currentState = ST_CLOSED;
-    publish(GPIO_FLAP_CLOSED_STATE);
-    stuckBootCount = 0;
+    rtc_currentState = ST_CLOSED;
+    publishFlapState(GPIO_FLAP_CLOSED_STATE);
+    rtc_stillOpenCount = 0;
     esp_sleep_enable_ext0_wakeup(GPIO_INPUT_IO_TRIGGER, GPIO_FLAP_OPEN_STATE);
 }
 
 void stillopen()
 {
-    currentState = ST_STILLOPEN;
-    stuckBootCount++;
-    Serial.printf("Putting ESP32 to sleep for %d secs.\n", (STILL_OPEN_TIMER_SLEEP_MICROSECS / 1000000));
+    rtc_currentState = ST_STILLOPEN;
+    rtc_stillOpenCount++;
+    DB Serial.printf("Putting ESP32 to sleep for %d secs.\n", (STILL_OPEN_TIMER_SLEEP_MICROSECS / 1000000));
     esp_sleep_enable_timer_wakeup(STILL_OPEN_TIMER_SLEEP_MICROSECS);
 }
 
 void stuck()
 {
-    currentState = ST_STUCK;
-    Serial.printf("Putting ESP32 to sleep for %d secs.\n", (STUCK_TIMER_SLEEP_MICROSECS / 1000000));
+    rtc_currentState = ST_STUCK;
+    DB Serial.printf("Putting ESP32 to sleep for %d secs.\n", (STUCK_TIMER_SLEEP_MICROSECS / 1000000));
     esp_sleep_enable_timer_wakeup(STUCK_TIMER_SLEEP_MICROSECS);
 }
