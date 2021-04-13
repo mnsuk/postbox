@@ -13,13 +13,15 @@ postbox top flap is opened. Go into deep sleep when it is closed.
 
 Hardware Connections
 ======================
-Magnetic reed switch connected to GPIO 25 
+Magnetic reed switch connected to GPIO 25. Requires external 100K 
+pullup resistor.
 
 Author:
 Martin Saunders <mnsaunders@gmail.com>
 */
 
 #include "EspMQTTClient.h"
+#include "driver/adc.h"
 
 #define TOPIC_HOME "homeassistant/binary_sensor/postbox/"
 #define AVAILABILITY_TOPIC TOPIC_HOME "availability"
@@ -33,7 +35,7 @@ Martin Saunders <mnsaunders@gmail.com>
 #define ST_CLOSED 4
 
 #define MAX_OPENFLAP_TIME 15000 // 15 seconds
-#define MAX_STILL_OPEN_COUNT 5
+#define MAX_STILL_OPEN_COUNT 3
 #define STILL_OPEN_TIMER_SLEEP_MICROSECS 120 * 1000000 // 2 minutes
 #define STUCK_TIMER_SLEEP_MICROSECS 1800 * 1000000     // 30 minutes
 
@@ -112,15 +114,15 @@ void esp32Sleep()
 {
     rtc_timeAwakeMillis = rtc_timeAwakeMillis + (millis() - currentMillis);
     rtc_lastFlapState = digitalRead(flapSensorPin);
-    msToTimeStr(totalTimeAwake, rtc_timeAwakeMillis);
-    DB Serial.printf("Flap is %d, awake %s, going to sleep.\n", rtc_lastFlapState, totalTimeAwake);
+    DB msToTimeStr(totalTimeAwake, rtc_timeAwakeMillis);
+    DB Serial.printf("Flap is %s, awake %s, going to sleep.\n", rtc_lastFlapState ? "open" : "closed", totalTimeAwake);
+    adc_power_off();
     esp_deep_sleep_start();
-    Serial.printf("this will never be printed");
+    Serial.println("This will never be printed");
 }
 
 void publishFlapState(int st)
 {
-
     DB Serial.print("Waiting for net:");
     int loopCount = 0;
     while (loopCount < 10)
@@ -136,12 +138,10 @@ void publishFlapState(int st)
                 if (st == GPIO_FLAP_OPEN_STATE)
                 {
                     client.publish(STATE_TOPIC, "open");
-                    // client.publish(AVAILABILITY_TOPIC, "offline", true);
                 }
                 else
                 {
                     client.publish(STATE_TOPIC, "closed");
-                    // client.publish(AVAILABILITY_TOPIC, "offline", true);
                 }
             }
             loopCount++;
@@ -153,27 +153,6 @@ void publishFlapState(int st)
 void onConnectionEstablished()
 {
     client.publish(AVAILABILITY_TOPIC, "online", true);
-}
-
-void onMessageReceived(const String &message)
-{
-    DB Serial.print("message received from hello/test: " + message);
-    if (message.startsWith("o"))
-    {
-        client.publish(STATE_TOPIC, "open");
-    }
-    else if (message.startsWith("c"))
-    {
-        client.publish(STATE_TOPIC, "closed");
-    }
-    else if (message.startsWith("x"))
-    {
-        client.publish(AVAILABILITY_TOPIC, "offline");
-    }
-    else
-    {
-        client.publish(STATE_TOPIC, "rat");
-    }
 }
 
 void print_status() {
@@ -194,7 +173,7 @@ void print_status() {
         Serial.print("State ST_STUCK, ");
         break;    
     }
-    Serial.print(" flapState: " + String(flapState));
+    Serial.print(" flapState: " + rtc_lastFlapState ? "closed" : "open");
     Serial.print(", bootCount: " + String(rtc_bootCount));
     Serial.println(", stillOpenCount " + String(rtc_stillOpenCount));
 }
@@ -203,9 +182,12 @@ void setup()
 {
     currentMillis = millis();
     Serial.begin(115200);
+    btStop();
+    client.enableLastWillMessage(AVAILABILITY_TOPIC, "offline", true);
+    client.setKeepAlive(60);
     // client.enableDebuggingMessages();
-    pinMode(GPIO_INPUT_IO_TRIGGER, INPUT_PULLUP);
-    gpio_pullup_en(GPIO_INPUT_IO_TRIGGER);
+    pinMode(GPIO_INPUT_IO_TRIGGER, INPUT);
+    gpio_pullup_dis(GPIO_INPUT_IO_TRIGGER);
     gpio_pulldown_dis(GPIO_INPUT_IO_TRIGGER);
     flapState = digitalRead(flapSensorPin);
     ++rtc_bootCount;

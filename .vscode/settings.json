@@ -1,6 +1,8 @@
 {
     "files.associations": {
         "exception": "cpp",
-        "typeinfo": "cpp"
+        "typeinfo": "cpp",
+        "new": "cpp",
+        "stdexcept": "cpp"
     }
 }
