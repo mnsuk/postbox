@@ -1,4 +1,4 @@
-#define DEBUG
+//#define DEBUG
 #ifdef DEBUG
 #define DB if(1)
 #else
@@ -13,27 +13,26 @@ postbox top flap is opened. Go into deep sleep when it is closed.
 
 Hardware Connections
 ======================
-Magnetic reed switch connected to GPIO 25. Requires external 100K 
-pullup resistor.
+Top postal flap magnetic reed switch connected to GPIO 25. 
+Owner's door magnetic reed switch connected to GPIO 26. 
+
+Both require external 100K pullup resistors.
 
 Author:
 Martin Saunders <mnsaunders@gmail.com>
 */
 #include "EspMQTTClient.h"
 #include "driver/adc.h"
-// #include "postbox.h" can't find it
 #define SSID "Penguins"
 #define SSID_PASSWORD "9EF382ABCD"
 #define MQTT_USER "mq_user"
 #define MQTT_PASSWORD "SPQR69tt"
-#define MQTT_CLIENTNAME "ESP32_postboxf"
+#define MQTT_CLIENTNAME "ESP32_postboxV2"
 
-
-#define TOPIC_HOME "development/"
-//#define TOPIC_HOME "homeassistant/binary_sensor/postbox/"
+#define TOPIC_HOME "homeassistant/binary_sensor/postbox/"
 #define AVAILABILITY_TOPIC TOPIC_HOME "availability"
-#define STATE_TOPIC TOPIC_HOME "state"
-#define REPORT_TOPIC TOPIC_HOME "report"
+#define FLAP_STATE_TOPIC TOPIC_HOME "flapstate"
+#define DOOR_STATE_TOPIC TOPIC_HOME "doorstate"
 
 #define ST_INIT 0
 #define ST_FIRSTOPEN 1
@@ -46,6 +45,15 @@ Martin Saunders <mnsaunders@gmail.com>
 #define STILL_OPEN_TIMER_SLEEP_MICROSECS 120 * 1000000 // 2 minutes
 #define STUCK_TIMER_SLEEP_MICROSECS 1800 * 1000000     // 30 minutes
 
+
+#define GPIO_25_BITMASK 0x2000000
+#define GPIO_26_BITMASK 0x4000000
+#define GPIO_FLAP_TRIGGER_BITMASK GPIO_25_BITMASK
+#define GPIO_DOOR_TRIGGER_BITMASK GPIO_26_BITMASK
+#define GPIO_FLAP_AND_DOOR_TRIGGER_BITMASK 0x6000000
+
+
+
 EspMQTTClient client(
     SSID,
     SSID_PASSWORD,
@@ -55,11 +63,15 @@ EspMQTTClient client(
     MQTT_CLIENTNAME // Client name that uniquely identify your device
 );
 
-// PIN for magnetic door sensor
+// PIN for magnetic open sensors
 gpio_num_t flapSensorPin = GPIO_NUM_25;
-gpio_num_t GPIO_INPUT_IO_TRIGGER = flapSensorPin;
+gpio_num_t doorSensorPin = GPIO_NUM_26;
+gpio_num_t GPIO_FLAP_IO_TRIGGER = flapSensorPin;
+gpio_num_t GPIO_DOOR_IO_TRIGGER = doorSensorPin;
 int GPIO_FLAP_CLOSED_STATE = LOW;
 int GPIO_FLAP_OPEN_STATE = !GPIO_FLAP_CLOSED_STATE;
+int GPIO_DOOR_CLOSED_STATE = LOW;
+int GPIO_DOOR_OPEN_STATE = !GPIO_FLAP_CLOSED_STATE;
 
 // RTC data retained across sleep cycles
 RTC_DATA_ATTR int rtc_currentState = ST_INIT;
@@ -69,6 +81,7 @@ RTC_DATA_ATTR int rtc_lastFlapState = -99;
 RTC_DATA_ATTR long rtc_timeAwakeMillis = 0;
 
 int flapState = LOW;
+int doorState = LOW;
 long currentMillis;
 int startTime = 0;
 char totalTimeAwake[21];
@@ -102,6 +115,14 @@ void print_wakeup_reason()
         Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason);
         break;
     }
+}
+
+/*
+ * Determine which GPIO triggered ext1 wakeup
+ */
+int get_wakeup_gpio(){
+  int bitpattern = esp_sleep_get_ext1_wakeup_status();
+  return log(bitpattern)/log(2);
 }
 
 /* formatting function to convert milliseconds to h:m:s */
@@ -144,17 +165,54 @@ void publishFlapState(int st)
                 DB Serial.print("p");
                 if (st == GPIO_FLAP_OPEN_STATE)
                 {
-                    client.publish(STATE_TOPIC, "open");
+                    client.publish(FLAP_STATE_TOPIC, "open");
                 }
                 else
                 {
-                    client.publish(STATE_TOPIC, "closed");
+                    client.publish(FLAP_STATE_TOPIC, "closed");
                 }
             }
             loopCount++;
         }
     }
     DB Serial.println(".");
+}
+
+void publishDoorState(int st)
+{
+    DB Serial.print("Waiting for net:");
+    int loopCount = 0;
+    while (loopCount < 10)
+    {
+        client.loop();
+        DB Serial.print(".");
+        delay(50);
+        if (client.isConnected())
+        {
+            if (loopCount == 0)
+            {
+                DB Serial.print("p");
+                if (st == GPIO_DOOR_OPEN_STATE)
+                {
+                    client.publish(DOOR_STATE_TOPIC, "open");
+                }
+                else
+                {
+                    client.publish(DOOR_STATE_TOPIC, "closed");
+                }
+            }
+            loopCount++;
+        }
+    }
+    DB Serial.println(".");
+}
+
+void waitForDoorClose(){
+  doorState = digitalRead(doorSensorPin);
+  while (doorState == GPIO_DOOR_OPEN_STATE) {
+     delay(50);
+     doorState = digitalRead(doorSensorPin);
+  }
 }
 
 void onConnectionEstablished()
@@ -191,18 +249,52 @@ void setup()
     Serial.begin(115200);
     btStop();
     client.enableLastWillMessage(AVAILABILITY_TOPIC, "offline", true);
-    client.setKeepAlive(60);
+    client.setKeepAlive(300);
     // client.enableDebuggingMessages();
     // mns
-    //pinMode(GPIO_INPUT_IO_TRIGGER, INPUT);
-    //gpio_pullup_dis(GPIO_INPUT_IO_TRIGGER);
-    pinMode(GPIO_INPUT_IO_TRIGGER, INPUT_PULLUP);
-    gpio_pulldown_dis(GPIO_INPUT_IO_TRIGGER);
+    pinMode(GPIO_FLAP_IO_TRIGGER, INPUT);
+    pinMode(GPIO_DOOR_IO_TRIGGER, INPUT);
+    gpio_pullup_dis(GPIO_FLAP_IO_TRIGGER);
+    gpio_pulldown_dis(GPIO_FLAP_IO_TRIGGER);
+    gpio_pullup_dis(GPIO_DOOR_IO_TRIGGER);
+    gpio_pulldown_dis(GPIO_DOOR_IO_TRIGGER);
     flapState = digitalRead(flapSensorPin);
+    doorState = digitalRead(doorSensorPin);
     ++rtc_bootCount;
 
     DB print_wakeup_reason();
     DB print_status();
+
+    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+    if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1) {
+      int gpiopin = get_wakeup_gpio();
+      if (gpiopin == doorSensorPin) {
+        publishDoorState(doorState);
+        switch (rtc_currentState) {
+        case ST_STILLOPEN:
+          esp_sleep_enable_timer_wakeup(STILL_OPEN_TIMER_SLEEP_MICROSECS);
+          esp_sleep_enable_ext1_wakeup(GPIO_DOOR_TRIGGER_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
+          break;
+        case ST_STUCK:
+          esp_sleep_enable_timer_wakeup(STUCK_TIMER_SLEEP_MICROSECS);
+          esp_sleep_enable_ext1_wakeup(GPIO_DOOR_TRIGGER_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
+          break;
+        case ST_CLOSED:
+          esp_sleep_enable_ext1_wakeup(GPIO_FLAP_AND_DOOR_TRIGGER_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
+          break;
+        default:
+           esp_sleep_enable_ext1_wakeup(GPIO_DOOR_TRIGGER_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
+          break;               
+        }
+        waitForDoorClose();
+        esp32Sleep();
+      } 
+    } else {
+        if (doorState == GPIO_DOOR_OPEN_STATE) {
+          publishDoorState(doorState);
+          waitForDoorClose();
+        }
+    }
 
     switch (rtc_currentState)
     {
@@ -312,7 +404,9 @@ void closed()
     rtc_currentState = ST_CLOSED;
     publishFlapState(GPIO_FLAP_CLOSED_STATE);
     rtc_stillOpenCount = 0;
-    esp_sleep_enable_ext0_wakeup(GPIO_INPUT_IO_TRIGGER, GPIO_FLAP_OPEN_STATE);
+
+    esp_sleep_enable_ext1_wakeup(GPIO_FLAP_AND_DOOR_TRIGGER_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
+    
 }
 
 void stillopen()
@@ -321,6 +415,7 @@ void stillopen()
     rtc_stillOpenCount++;
     DB Serial.printf("Putting ESP32 to sleep for %d secs.\n", (STILL_OPEN_TIMER_SLEEP_MICROSECS / 1000000));
     esp_sleep_enable_timer_wakeup(STILL_OPEN_TIMER_SLEEP_MICROSECS);
+    esp_sleep_enable_ext1_wakeup(GPIO_DOOR_TRIGGER_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
 }
 
 void stuck()
@@ -328,4 +423,5 @@ void stuck()
     rtc_currentState = ST_STUCK;
     DB Serial.printf("Putting ESP32 to sleep for %d secs.\n", (STUCK_TIMER_SLEEP_MICROSECS / 1000000));
     esp_sleep_enable_timer_wakeup(STUCK_TIMER_SLEEP_MICROSECS);
+    esp_sleep_enable_ext1_wakeup(GPIO_DOOR_TRIGGER_BITMASK, ESP_EXT1_WAKEUP_ANY_HIGH);
 }
