@@ -7,8 +7,9 @@
 /*
 Postbox
 =======
-Designed to work with HomeAssistant. Send a MQTT message when the
-postbox top flap is opened. Go into deep sleep when it is closed.
+Designed to work with HomeAssistant. Sends a MQTT message when the
+postbox top flap is opened and/or when the door is opened. 
+Go into deep sleep when the flap is closed.
 
 
 Hardware Connections
