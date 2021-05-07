@@ -3,5 +3,5 @@
     "configuration": "FlashFreq=80,UploadSpeed=921600,PartitionScheme=default,DebugLevel=none",
     "board": "DFRobot:esp32:firebeetle32",
     "output": "../build_output",
-    "port": "COM6"
+    "port": "COM10"
 }

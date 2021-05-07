@@ -1,4 +1,4 @@
-// #define DEBUG
+#define DEBUG
 #ifdef DEBUG
 #define DB if(1)
 #else
@@ -19,11 +19,18 @@ pullup resistor.
 Author:
 Martin Saunders <mnsaunders@gmail.com>
 */
-
 #include "EspMQTTClient.h"
 #include "driver/adc.h"
+// #include "postbox.h" can't find it
+#define SSID "Penguins"
+#define SSID_PASSWORD "9EF382ABCD"
+#define MQTT_USER "mq_user"
+#define MQTT_PASSWORD "SPQR69tt"
+#define MQTT_CLIENTNAME "ESP32_postboxf"
 
-#define TOPIC_HOME "homeassistant/binary_sensor/postbox/"
+
+#define TOPIC_HOME "development/"
+//#define TOPIC_HOME "homeassistant/binary_sensor/postbox/"
 #define AVAILABILITY_TOPIC TOPIC_HOME "availability"
 #define STATE_TOPIC TOPIC_HOME "state"
 #define REPORT_TOPIC TOPIC_HOME "report"
@@ -40,12 +47,12 @@ Martin Saunders <mnsaunders@gmail.com>
 #define STUCK_TIMER_SLEEP_MICROSECS 1800 * 1000000     // 30 minutes
 
 EspMQTTClient client(
-    "Penguins",
-    "9EF382ABCD",
+    SSID,
+    SSID_PASSWORD,
     "192.168.0.7",  // MQTT Broker server ip
-    "mq_user",      // Can be omitted if not needed
-    "SPQR69tt",     // Can be omitted if not needed
-    "ESP32_postbox" // Client name that uniquely identify your device
+    MQTT_USER,      // Can be omitted if not needed
+    MQTT_PASSWORD,     // Can be omitted if not needed
+    MQTT_CLIENTNAME // Client name that uniquely identify your device
 );
 
 // PIN for magnetic door sensor
@@ -186,8 +193,10 @@ void setup()
     client.enableLastWillMessage(AVAILABILITY_TOPIC, "offline", true);
     client.setKeepAlive(60);
     // client.enableDebuggingMessages();
-    pinMode(GPIO_INPUT_IO_TRIGGER, INPUT);
-    gpio_pullup_dis(GPIO_INPUT_IO_TRIGGER);
+    // mns
+    //pinMode(GPIO_INPUT_IO_TRIGGER, INPUT);
+    //gpio_pullup_dis(GPIO_INPUT_IO_TRIGGER);
+    pinMode(GPIO_INPUT_IO_TRIGGER, INPUT_PULLUP);
     gpio_pulldown_dis(GPIO_INPUT_IO_TRIGGER);
     flapState = digitalRead(flapSensorPin);
     ++rtc_bootCount;
