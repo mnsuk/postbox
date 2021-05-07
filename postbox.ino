@@ -22,6 +22,7 @@ Both require external 100K pullup resistors.
 Author:
 Martin Saunders <mnsaunders@gmail.com>
 */
+#include <WiFi.h>
 #include "EspMQTTClient.h"
 #include "driver/adc.h"
 #define SSID "Penguins"
@@ -53,6 +54,9 @@ Martin Saunders <mnsaunders@gmail.com>
 #define GPIO_DOOR_TRIGGER_BITMASK GPIO_26_BITMASK
 #define GPIO_FLAP_AND_DOOR_TRIGGER_BITMASK 0x6000000
 
+IPAddress ip(192, 168, 0, 153);
+IPAddress gateway(192, 168, 0, 1);
+IPAddress subnet(255, 255, 255, 0);
 
 
 EspMQTTClient client(
@@ -249,10 +253,11 @@ void setup()
     currentMillis = millis();
     Serial.begin(115200);
     btStop();
+    // bypass ESPMQTT to set fixed IP
+    WiFi.config(ip, gateway, subnet);
     client.enableLastWillMessage(AVAILABILITY_TOPIC, "offline", true);
     client.setKeepAlive(300);
     // client.enableDebuggingMessages();
-    // mns
     pinMode(GPIO_FLAP_IO_TRIGGER, INPUT);
     pinMode(GPIO_DOOR_IO_TRIGGER, INPUT);
     gpio_pullup_dis(GPIO_FLAP_IO_TRIGGER);
